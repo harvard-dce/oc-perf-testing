@@ -1,0 +1,69 @@
+AWSTemplateFormatVersion : '2010-09-09'
+Description: Zoom to Opencast video ingester
+
+Parameters:
+
+  LambdaCodeBucket:
+    Type: String
+  CloudwatchLogGroup:
+    Type: String
+  VpcSecurityGroupId:
+    Type: String
+  VpcSubnetId:
+    Type: String
+
+Resources:
+
+  OCMetricsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Action: sts:AssumeRole
+          Effect: Allow
+          Principal:
+            Service: !Sub "logs.${AWS::Region}.amazonaws.com"
+      ManagedPolicyArns:
+      - "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+      Policies:
+      - PolicyName: !Sub "${AWS::StackName}-policy"
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+          - Effect: "Allow"
+            Action:
+            - "cloudwatch:*"
+            - "logs:*"
+            Resource: !Ref OCMetricsFunction
+
+  OCMetricsFunction:
+    Type: AWS::Lambda::Function
+    Properites:
+      Handler: function.handler
+      Runtime: python3.6
+      Timeout: 30
+      Role: !GetAtt [OCMetricsRole, Arn]
+      FunctionName: !Sub "${AWS::StackName}-oc-metrics-function"
+      Environment:
+        Variables:
+          DEBUG: 0
+      Code:
+        S3Bucket: !Ref LambdaCodeBucket
+        S3Key: !Sub "oc-metrics/${AWS::StackName}-function.zip"
+      VpcConfig:
+        SecurityGroupIds:
+        - !Ref VpcSecurityGroupId
+        SubnetIds:
+        - !Ref VpcSubnetId
+
+  OCMetricsLogSubscriptionFilter:
+    Type: AWS::Logs::SubscriptionFilter
+    DependsOn:
+      - OCMetricsFunction
+    Properties:
+      LogGroupName: !Ref OCLogGroup
+      DestinationArn: !GetAtt [OCMetricsFunction, Arn]
+      FilterPattern: 'Workflow "state set to"'
+
