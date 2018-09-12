@@ -18,24 +18,26 @@ def profile_check(ctx):
             raise Exit("Aborting")
 
 
-@task
+@task(pre=[profile_check])
 def create(ctx, stack_name, oc_cluster, code_bucket):
     vpc_subnet_id, vpc_sg_id = vpc_components(ctx, oc_cluster)
     params = {
         'VpcSubnetId': vpc_subnet_id,
         'VpcSecurityGroupId': vpc_sg_id,
-        'CloudwatchLogGroup': "{}_opencast",
+        'CloudwatchLogGroup': "{}_opencast".format(oc_cluster),
         'CodeBucket': code_bucket
     }
     __create_or_update(ctx, "create", stack_name, params)
+    __wait_for(ctx, "create", stack_name)
 
 
-@task
+@task(pre=[profile_check])
 def update(ctx, stack_name):
     __create_or_update(ctx, "update")
+    __wait_for(ctx, "update", stack_name)
 
 
-@task
+@task(pre=[profile_check])
 def update_lambda(ctx):
     __package(ctx)
     ctx.run("aws {} lambda update-function-code "
@@ -46,11 +48,19 @@ def update_lambda(ctx):
                     "stack-nag.zip"))
 
 
-@task
+@task(pre=[profile_check])
 def delete(ctx, stack_name):
     cmd = "aws {} cloudformation delete-stack --stack-name {}"\
           .format(profile_arg(), stack_name)
     ctx.run(cmd)
+    __wait_for(ctx, "delete", stack_name)
+
+
+ns = Collection()
+ns.add_task(create)
+ns.add_task(update)
+ns.add_task(delete)
+ns.add_task(update_lambda)
 
 
 def stack_exists(ctx, stack_name):
@@ -78,20 +88,19 @@ def vpc_components(ctx, oc_cluster):
 
     cmd = ("aws {} ec2 describe-subnets --filters "
            "'Name=vpc-id,Values={}' "
-           "'Name=tag:aws:cloudformation:logical-id,Values=PrivateSubnet'") \
+           "'Name=tag:aws:cloudformation:logical-id,Values=PrivateSubnet*' " 
+           "--query 'Subnets[0].SubnetId' --output text") \
         .format(profile_arg(), vpc_id)
 
-    res = ctx.run(cmd, hide=1)
-    subnet_data = json.loads(res.stdout)
-    subnet_id = subnet_data['Subnets'][0]['SubnetId']
+    subnet_id = ctx.run(cmd, hide=1).stdout.strip()
 
     cmd = ("aws {} ec2 describe-security-groups --filters "
            "'Name=vpc-id,Values={}' "
-           "'Name=tag:aws:cloudformation:logical-id,Values=OpsworksLayerSecurityGroupCommon'") \
+           "'Name=tag:aws:cloudformation:logical-id,Values=OpsworksLayerSecurityGroupCommon' "
+           "--query 'SecurityGroups[0].GroupId' --output text") \
         .format(profile_arg(), vpc_id)
-    res = ctx.run(cmd, hide=1)
-    sg_data = json.loads(res.stdout)
-    sg_id = sg_data['SecurityGroups'][0]['GroupId']
+
+    sg_id = ctx.run(cmd, hide=1).stdout.strip()
 
     return subnet_id, sg_id
 
@@ -108,7 +117,7 @@ def __create_or_update(ctx, op, stack_name, params):
 
     cmd_params = cfn_cmd_params(params)
 
-    __package(ctx)
+    __package(ctx, stack_name, params['CodeBucket'])
 
     cmd = ("aws {} cloudformation {}-stack "
            "--capabilities CAPABILITY_NAMED_IAM "
@@ -121,8 +130,7 @@ def __create_or_update(ctx, op, stack_name, params):
             stack_name,
             cmd_params
         )
-    print(cmd)
-#    ctx.run(cmd)
+    ctx.run(cmd)
 
 
 def __package(ctx, stack_name, code_bucket):
@@ -137,7 +145,7 @@ def __package(ctx, stack_name, code_bucket):
         shutil.rmtree(build_path)
 
     if exists(req_file):
-        ctx.run("pip install -U -r {} -t {}".format(req_file, build_path))
+        ctx.run("pip install --no-cache-dir -U -r {} -t {}".format(req_file, build_path))
     else:
         ctx.run("mkdir {}".format(build_path))
 
@@ -150,7 +158,7 @@ def __package(ctx, stack_name, code_bucket):
     with ctx.cd(build_path):
         ctx.run("zip -r {} .".format(zip_path))
 
-    ctx.run("aws {profile} s3 cp {zip_path} s3://{bucket}/oc-workflow-metrics/{stack}/function.zip" \
+    ctx.run("aws {} s3 cp {} s3://{}/oc-workflow-metrics/{}/function.zip" \
         .format(
             profile_arg(),
             zip_path,
@@ -158,3 +166,11 @@ def __package(ctx, stack_name, code_bucket):
             stack_name
         )
     )
+
+def __wait_for(ctx, op, stack_name):
+    wait_cmd = ("aws {} cloudformation wait stack-{}-complete "
+                "--stack-name {}").format(profile_arg(), op, stack_name)
+    print("Waiting for stack {} to complete...".format(op))
+    ctx.run(wait_cmd)
+    print("Done")
+

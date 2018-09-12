@@ -3,7 +3,7 @@ Description: Zoom to Opencast video ingester
 
 Parameters:
 
-  LambdaCodeBucket:
+  CodeBucket:
     Type: String
   CloudwatchLogGroup:
     Type: String
@@ -24,6 +24,10 @@ Resources:
         - Action: sts:AssumeRole
           Effect: Allow
           Principal:
+            Service: lambda.amazonaws.com
+        - Action: sts:AssumeRole
+          Effect: Allow
+          Principal:
             Service: !Sub "logs.${AWS::Region}.amazonaws.com"
       ManagedPolicyArns:
       - "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
@@ -36,22 +40,22 @@ Resources:
             Action:
             - "cloudwatch:*"
             - "logs:*"
-            Resource: !Ref OCMetricsFunction
+            Resource: "*"
 
   OCMetricsFunction:
     Type: AWS::Lambda::Function
-    Properites:
+    Properties:
       Handler: function.handler
       Runtime: python3.6
       Timeout: 30
       Role: !GetAtt [OCMetricsRole, Arn]
-      FunctionName: !Sub "${AWS::StackName}-oc-metrics-function"
+      FunctionName: !Sub "${AWS::StackName}-function"
       Environment:
         Variables:
           DEBUG: 0
       Code:
-        S3Bucket: !Ref LambdaCodeBucket
-        S3Key: !Sub "oc-metrics/${AWS::StackName}-function.zip"
+        S3Bucket: !Ref CodeBucket
+        S3Key: !Sub "oc-workflow-metrics/${AWS::StackName}/function.zip"
       VpcConfig:
         SecurityGroupIds:
         - !Ref VpcSecurityGroupId
@@ -63,7 +67,16 @@ Resources:
     DependsOn:
       - OCMetricsFunction
     Properties:
-      LogGroupName: !Ref OCLogGroup
+      LogGroupName: !Ref CloudwatchLogGroup
       DestinationArn: !GetAtt [OCMetricsFunction, Arn]
       FilterPattern: 'Workflow "state set to"'
+
+  OCMetricsLogSubscriptionPermission:
+    Type: AWS::Lambda::Permission
+    DependsOn:
+    - OCMetricsFunction
+    Properties:
+      FunctionName: !Ref OCMetricsFunction
+      Action: lambda:InvokeFunction
+      Principal: !Sub "logs.${AWS::Region}.amazonaws.com"
 
