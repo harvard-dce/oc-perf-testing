@@ -11,6 +11,10 @@ Parameters:
     Type: String
   VpcSubnetId:
     Type: String
+  OCCluster:
+    Type: String
+  OCAdminIp:
+    Type: String
 
 Resources:
 
@@ -52,6 +56,8 @@ Resources:
       FunctionName: !Sub "${AWS::StackName}-function"
       Environment:
         Variables:
+          OC_ADMIN_URL: !Ref OCAdminIp
+          OC_CLUSTER: !Ref OCCluster
           DEBUG: 0
       Code:
         S3Bucket: !Ref CodeBucket

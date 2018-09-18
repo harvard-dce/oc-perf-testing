@@ -21,32 +21,34 @@ def profile_check(ctx):
 @task(pre=[profile_check])
 def create(ctx, stack_name, oc_cluster, code_bucket):
     vpc_subnet_id, vpc_sg_id = vpc_components(ctx, oc_cluster)
+    oc_admin_ip = get_admin_ip(ctx, oc_cluster)
     params = {
         'VpcSubnetId': vpc_subnet_id,
         'VpcSecurityGroupId': vpc_sg_id,
         'CloudwatchLogGroup': "{}_opencast".format(oc_cluster),
-        'CodeBucket': code_bucket
+        'CodeBucket': code_bucket,
+        'OCAdminIp': oc_admin_ip,
+        'OCCluster': oc_cluster
     }
     __create_or_update(ctx, "create", stack_name, params)
     __wait_for(ctx, "create", stack_name)
 
 
-@task(pre=[profile_check])
-def update(ctx, stack_name):
-    __create_or_update(ctx, "update")
-    __wait_for(ctx, "update", stack_name)
+#@task(pre=[profile_check])
+#def update(ctx, stack_name):
+#    __create_or_update(ctx, "update")
+#    __wait_for(ctx, "update", stack_name)
 
 
 @task(pre=[profile_check])
-def update_lambda(ctx):
-    __package(ctx)
-    ctx.run("aws {} lambda update-function-code "
-            "--function-name {} --s3-bucket {} --s3-key {}"
-            .format(profile_arg(),
-                    "stack-nag-function",
-                    getenv('LAMBDA_CODE_BUCKET'),
-                    "stack-nag.zip"))
-
+def update_lambda(ctx, stack_name, code_bucket):
+    __package(ctx, stack_name, code_bucket)
+    function_name = stack_name + "-function"
+    s3_key = "oc-workflow-metrics/" + stack_name + "/function.zip"
+    cmd = ("aws {} lambda update-function-code "
+            "--function-name {} --s3-bucket {} --s3-key {}") \
+            .format(profile_arg(), function_name, code_bucket, s3_key)
+    ctx.run(cmd)
 
 @task(pre=[profile_check])
 def delete(ctx, stack_name):
@@ -58,9 +60,9 @@ def delete(ctx, stack_name):
 
 ns = Collection()
 ns.add_task(create)
-ns.add_task(update)
 ns.add_task(delete)
 ns.add_task(update_lambda)
+#ns.add_task(update)
 
 
 def stack_exists(ctx, stack_name):
@@ -81,7 +83,7 @@ def vpc_components(ctx, oc_cluster):
     cmd = ("aws opsworks describe-stacks "
            "--query \"Stacks[?Name=='{}'].VpcId\" "
            "--output text").format(oc_cluster)
-    vpc_id = ctx.run(cmd, hide=1).stdout.strip()
+    vpc_id = ctx.run(cmd, hide=True).stdout.strip()
 
     if vpc_id == "":
         raise Exit("Can't find a cluster named '{}'".format(oc_cluster))
@@ -92,7 +94,7 @@ def vpc_components(ctx, oc_cluster):
            "--query 'Subnets[0].SubnetId' --output text") \
         .format(profile_arg(), vpc_id)
 
-    subnet_id = ctx.run(cmd, hide=1).stdout.strip()
+    subnet_id = ctx.run(cmd, hide=True).stdout.strip()
 
     cmd = ("aws {} ec2 describe-security-groups --filters "
            "'Name=vpc-id,Values={}' "
@@ -100,9 +102,23 @@ def vpc_components(ctx, oc_cluster):
            "--query 'SecurityGroups[0].GroupId' --output text") \
         .format(profile_arg(), vpc_id)
 
-    sg_id = ctx.run(cmd, hide=1).stdout.strip()
+    sg_id = ctx.run(cmd, hide=True).stdout.strip()
 
     return subnet_id, sg_id
+
+def get_admin_ip(ctx, oc_cluster):
+
+    cmd = ("aws {} opsworks describe-stacks "
+           "--query \"Stacks[?Name=='{}'].StackId\" "
+           "--output text").format(profile_arg(), oc_cluster)
+
+    opsworks_stack_id = ctx.run(cmd, hide=True).stdout.strip()
+
+    cmd = ("aws {} opsworks describe-instances --stack-id {} "
+           "--query \"Instances[?starts_with(Hostname, 'admin')].ElasticIp\" "
+           "--output text").format(profile_arg(), opsworks_stack_id)
+
+    return ctx.run(cmd, hide=True).stdout.strip()
 
 def cfn_cmd_params(params):
     return " ".join(

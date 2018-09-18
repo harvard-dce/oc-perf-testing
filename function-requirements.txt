@@ -1,1 +1,3 @@
 pyhorn==0.9.0
+boto3
+arrow

@@ -1,0 +1,2 @@
+pyinvoke
+awscli
