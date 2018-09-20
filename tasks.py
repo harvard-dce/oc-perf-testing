@@ -3,9 +3,35 @@ from invoke import task, Collection
 from invoke.exceptions import Exit
 from os import symlink, getenv as env
 from os.path import join, dirname, exists
+from dotenv import load_dotenv
 import json
 
+load_dotenv(join(dirname(__file__), '.env'))
+
 AWS_PROFILE = env('AWS_PROFILE')
+AWS_DEFAULT_REGION = env('AWS_DEFAULT_REGION', 'us-east-1')
+
+
+def getenv(var, required=True):
+    val = env(var)
+    if required and val is None:
+        raise Exit("{} not defined".format(var))
+    return val
+
+
+def profile_arg():
+    if AWS_PROFILE is not None:
+        return "--profile {}".format(AWS_PROFILE)
+    return ""
+
+
+def stack_tags():
+    tags = "Key=cfn-stack,Value={}".format(getenv('STACK_NAME'))
+    extra_tags = getenv("STACK_TAGS")
+    if extra_tags is not None:
+        tags += " " + extra_tags
+    return "--tags {}".format(tags)
+
 
 @task
 def profile_check(ctx):
@@ -19,19 +45,19 @@ def profile_check(ctx):
 
 
 @task(pre=[profile_check])
-def create(ctx, stack_name, oc_cluster, code_bucket):
-    vpc_subnet_id, vpc_sg_id = vpc_components(ctx, oc_cluster)
-    oc_admin_ip = get_admin_ip(ctx, oc_cluster)
+def create(ctx):
+    vpc_subnet_id, vpc_sg_id = vpc_components(ctx)
+    oc_admin_ip = get_admin_ip(ctx)
     params = {
         'VpcSubnetId': vpc_subnet_id,
         'VpcSecurityGroupId': vpc_sg_id,
-        'CloudwatchLogGroup': "{}_opencast".format(oc_cluster),
-        'CodeBucket': code_bucket,
+        'CloudwatchLogGroup': "{}_opencast".format(getenv('OC_CLUSTER')),
+        'CodeBucket': getenv('CODE_BUCKET'),
         'OCAdminIp': oc_admin_ip,
-        'OCCluster': oc_cluster
+        'OCCluster': getenv('OC_CLUSTER')
     }
-    __create_or_update(ctx, "create", stack_name, params)
-    __wait_for(ctx, "create", stack_name)
+    __create_or_update(ctx, "create", params)
+    __wait_for(ctx, "create")
 
 
 #@task(pre=[profile_check])
@@ -41,21 +67,21 @@ def create(ctx, stack_name, oc_cluster, code_bucket):
 
 
 @task(pre=[profile_check])
-def update_lambda(ctx, stack_name, code_bucket):
-    __package(ctx, stack_name, code_bucket)
-    function_name = stack_name + "-function"
-    s3_key = "oc-workflow-metrics/" + stack_name + "/function.zip"
+def update_lambda(ctx):
+    __package(ctx)
+    function_name = getenv('STACK_NAME') + "-function"
+    s3_key = "oc-workflow-metrics/" + getenv('STACK_NAME') + "/function.zip"
     cmd = ("aws {} lambda update-function-code "
             "--function-name {} --s3-bucket {} --s3-key {}") \
-            .format(profile_arg(), function_name, code_bucket, s3_key)
+            .format(profile_arg(), function_name, getenv('CODE_BUCKET'), s3_key)
     ctx.run(cmd)
 
 @task(pre=[profile_check])
-def delete(ctx, stack_name):
+def delete(ctx):
     cmd = "aws {} cloudformation delete-stack --stack-name {}"\
-          .format(profile_arg(), stack_name)
+          .format(profile_arg(), getenv('STACK_NAME'))
     ctx.run(cmd)
-    __wait_for(ctx, "delete", stack_name)
+    __wait_for(ctx, "delete", getenv('STACK_NAME'))
 
 
 ns = Collection()
@@ -65,28 +91,22 @@ ns.add_task(update_lambda)
 #ns.add_task(update)
 
 
-def stack_exists(ctx, stack_name):
+def stack_exists(ctx):
     cmd = "aws {} cloudformation describe-stacks --stack-name {}"\
-          .format(profile_arg(), stack_name)
+          .format(profile_arg(), getenv('STACK_NAME'))
     res = ctx.run(cmd, hide=True, warn=True, echo=False)
     return res.exited == 0
 
 
-def profile_arg():
-    if AWS_PROFILE is not None:
-        return "--profile {}".format(AWS_PROFILE)
-    return ""
-
-
-def vpc_components(ctx, oc_cluster):
+def vpc_components(ctx):
 
     cmd = ("aws opsworks describe-stacks "
            "--query \"Stacks[?Name=='{}'].VpcId\" "
-           "--output text").format(oc_cluster)
+           "--output text").format(getenv('OC_CLUSTER'))
     vpc_id = ctx.run(cmd, hide=True).stdout.strip()
 
     if vpc_id == "":
-        raise Exit("Can't find a cluster named '{}'".format(oc_cluster))
+        raise Exit("Can't find a cluster named '{}'".format(getenv('OC_CLUSTER')))
 
     cmd = ("aws {} ec2 describe-subnets --filters "
            "'Name=vpc-id,Values={}' "
@@ -106,11 +126,12 @@ def vpc_components(ctx, oc_cluster):
 
     return subnet_id, sg_id
 
-def get_admin_ip(ctx, oc_cluster):
+
+def get_admin_ip(ctx):
 
     cmd = ("aws {} opsworks describe-stacks "
            "--query \"Stacks[?Name=='{}'].StackId\" "
-           "--output text").format(profile_arg(), oc_cluster)
+           "--output text").format(profile_arg(), getenv('OC_CLUSTER'))
 
     opsworks_stack_id = ctx.run(cmd, hide=True).stdout.strip()
 
@@ -120,20 +141,22 @@ def get_admin_ip(ctx, oc_cluster):
 
     return ctx.run(cmd, hide=True).stdout.strip()
 
+
 def cfn_cmd_params(params):
     return " ".join(
         "ParameterKey={},ParameterValue={}".format(k, v)
         for k, v in params.items()
     )
 
-def __create_or_update(ctx, op, stack_name, params):
 
-    if op == "create" and stack_exists(ctx, stack_name):
-        raise Exit("Stack {} already exists!".format(stack_name))
+def __create_or_update(ctx, op, params):
+
+    if op == "create" and stack_exists(ctx):
+        raise Exit("Stack {} already exists!".format(getenv('STACK_NAME')))
 
     cmd_params = cfn_cmd_params(params)
 
-    __package(ctx, stack_name, params['CodeBucket'])
+    __package(ctx)
 
     cmd = ("aws {} cloudformation {}-stack "
            "--capabilities CAPABILITY_NAMED_IAM "
@@ -143,13 +166,13 @@ def __create_or_update(ctx, op, stack_name, params):
         ).format(
             profile_arg(),
             op,
-            stack_name,
+            getenv('STACK_NAME'),
             cmd_params
         )
     ctx.run(cmd)
 
 
-def __package(ctx, stack_name, code_bucket):
+def __package(ctx):
 
     req_file = join(dirname(__file__), 'function-requirements.txt')
     zip_path = join(dirname(__file__), 'dist/function.zip')
@@ -178,14 +201,15 @@ def __package(ctx, stack_name, code_bucket):
         .format(
             profile_arg(),
             zip_path,
-            code_bucket,
-            stack_name
+            getenv('CODE_BUCKET'),
+            getenv('STACK_NAME')
         )
     )
 
-def __wait_for(ctx, op, stack_name):
+
+def __wait_for(ctx, op):
     wait_cmd = ("aws {} cloudformation wait stack-{}-complete "
-                "--stack-name {}").format(profile_arg(), op, stack_name)
+                "--stack-name {}").format(profile_arg(), op, getenv('STACK_NAME'))
     print("Waiting for stack {} to complete...".format(op))
     ctx.run(wait_cmd)
     print("Done")
