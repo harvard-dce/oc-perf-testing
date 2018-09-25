@@ -4,12 +4,16 @@ from invoke.exceptions import Exit
 from os import symlink, getenv as env
 from os.path import join, dirname, exists
 from dotenv import load_dotenv
-import json
+from metrics import CWPublisher
 
 load_dotenv(join(dirname(__file__), '.env'))
 
 AWS_PROFILE = env('AWS_PROFILE')
 AWS_DEFAULT_REGION = env('AWS_DEFAULT_REGION', 'us-east-1')
+
+if AWS_PROFILE is not None:
+    import boto3
+    boto3.setup_default_session(profile_name=AWS_PROFILE)
 
 
 def getenv(var, required=True):
@@ -54,7 +58,8 @@ def create(ctx):
         'CloudwatchLogGroup': "{}_opencast".format(getenv('OC_CLUSTER')),
         'CodeBucket': getenv('CODE_BUCKET'),
         'OCAdminIp': oc_admin_ip,
-        'OCCluster': getenv('OC_CLUSTER')
+        'OCCluster': getenv('OC_CLUSTER'),
+
     }
     __create_or_update(ctx, "create", params)
     __wait_for(ctx, "create")
@@ -81,14 +86,20 @@ def delete(ctx):
     cmd = "aws {} cloudformation delete-stack --stack-name {}"\
           .format(profile_arg(), getenv('STACK_NAME'))
     ctx.run(cmd)
-    __wait_for(ctx, "delete", getenv('STACK_NAME'))
+    __wait_for(ctx, "delete")
 
 
-ns = Collection()
-ns.add_task(create)
-ns.add_task(delete)
-ns.add_task(update_lambda)
-#ns.add_task(update)
+@task(pre=[profile_check])
+def harvest(ctx, start_date, end_date=None, count=None):
+    oc_admin_ip = get_admin_ip(ctx)
+    publisher = CWPublisher(
+        getenv('OC_CLUSTER'),
+        oc_admin_ip,
+        getenv('OC_API_USER'),
+        getenv('OC_API_PASS')
+    )
+    for wf in publisher.fetch_workflows(start_date, end_date, count):
+        publisher.publish_workflow_metrics(wf)
 
 
 def stack_exists(ctx):
@@ -136,10 +147,16 @@ def get_admin_ip(ctx):
     opsworks_stack_id = ctx.run(cmd, hide=True).stdout.strip()
 
     cmd = ("aws {} opsworks describe-instances --stack-id {} "
-           "--query \"Instances[?starts_with(Hostname, 'admin')].ElasticIp\" "
+           "--query \"Instances[?starts_with(Hostname, 'admin')].[ElasticIp,Status]\" "
            "--output text").format(profile_arg(), opsworks_stack_id)
 
-    return ctx.run(cmd, hide=True).stdout.strip()
+    ip, status = ctx.run(cmd, hide=True).stdout.strip().split()
+
+    if status != "online":
+        print('\033[31m' + 'WARNING: admin instance is not online')
+        print('\033[30m')
+
+    return ip
 
 
 def cfn_cmd_params(params):
@@ -213,4 +230,19 @@ def __wait_for(ctx, op):
     print("Waiting for stack {} to complete...".format(op))
     ctx.run(wait_cmd)
     print("Done")
+
+
+ns = Collection()
+
+cfn_ns = Collection('cfn')
+cfn_ns.add_task(create)
+cfn_ns.add_task(delete)
+cfn_ns.add_task(update_lambda)
+#ns.add_task(update)
+ns.add_collection(cfn_ns)
+
+pub_ns = Collection('pub')
+pub_ns.add_task(harvest)
+ns.add_collection(pub_ns)
+
 

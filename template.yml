@@ -15,6 +15,10 @@ Parameters:
     Type: String
   OCAdminIp:
     Type: String
+  OcApiUser:
+    Type: String
+  OcApiPass:
+    Type: String
 
 Resources:
 
@@ -57,6 +61,8 @@ Resources:
       Environment:
         Variables:
           OC_ADMIN_URL: !Ref OCAdminIp
+          OC_API_USER: !Ref OcApiUser
+          OC_API_PASS: !Ref OcApiPass
           OC_CLUSTER: !Ref OCCluster
           DEBUG: 0
       Code:
@@ -75,7 +81,7 @@ Resources:
     Properties:
       LogGroupName: !Ref CloudwatchLogGroup
       DestinationArn: !GetAtt [OCMetricsFunction, Arn]
-      FilterPattern: 'Workflow "state set to"'
+      FilterPattern: 'WORKFLOW-PERFORMANCE-METRIC'
 
   OCMetricsLogSubscriptionPermission:
     Type: AWS::Lambda::Permission

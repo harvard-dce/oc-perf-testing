@@ -1,3 +1,6 @@
 invoke
 awscli
+python-dotenv
+pytest
+pytest-mock
 -r function-requirements.txt
