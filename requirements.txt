@@ -1,8 +1,0 @@
-invoke
-awscli
-python-dotenv
-pytest
-pytest-mock
-notebook
-ipython-secrets
--r function-requirements.txt
