@@ -5,6 +5,7 @@ from os import symlink, getenv as env
 from os.path import join, dirname, exists
 from dotenv import load_dotenv
 from metrics import CWPublisher
+from fabric import Connection
 
 load_dotenv(join(dirname(__file__), '.env'))
 
@@ -100,6 +101,34 @@ def harvest(ctx, start_date, end_date=None, count=None):
     )
     for wf in publisher.fetch_workflows(start_date, end_date, count):
         publisher.publish_workflow_metrics(wf)
+
+
+@task
+def fio(ctx):
+    c = Connection(get_admin_ip(ctx))
+    fio_output = {}
+    for path in ['/opt/opencast-workspace', '/var/opencast']:
+        c.run((
+            # throw-away: 5 min warm-up
+            "fio --runtime=300 --time_based --clocksource=clock_gettime --name=randread --numjobs=8 "
+            "-rw=randread --random_distribution=pareto:0.9 --bs=8k --size=10g --filename=fio.tmp --output-format=json"
+        ))
+        fio_output[path] = [
+            c.run((
+                # file system random I/O, 10 Gbytes, 1 thread
+                "fio --runtime=60 --time_based --clocksource=clock_gettime --name=randread --numjobs=1 "
+                "--rw=randread --random_distribution=pareto:0.9 --bs=8k --size=10g --filename=fio.tmp --output-format=json"
+            ))
+        ]
+        fio_output[path].append(
+            c.run((
+                # file system random I/O, 10 Gbytes, 8 threads
+                "fio --runtime=60 --time_based --clocksource=clock_gettime --name=randread --numjobs=8 "
+                "--rw=randread --random_distribution=pareto:0.9 --bs=8k --size=10g --filename=fio.tmp --output-format=json"
+            ))
+        )
+    print(fio_output)
+#=============================================================================#
 
 
 def stack_exists(ctx):
@@ -244,5 +273,9 @@ ns.add_collection(cfn_ns)
 pub_ns = Collection('pub')
 pub_ns.add_task(harvest)
 ns.add_collection(pub_ns)
+
+perf_ns = Collection('perf')
+perf_ns.add_task(fio)
+ns.add_collection(perf_ns)
 
 
