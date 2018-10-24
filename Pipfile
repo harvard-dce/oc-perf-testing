@@ -13,6 +13,7 @@ pyhorn = "*"
 boto3 = "*"
 arrow = "*"
 Fabric = "*"
+iperf3 = "*"
 
 [dev-packages]
 pytest = "*"
