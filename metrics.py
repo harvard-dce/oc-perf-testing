@@ -1,86 +1,35 @@
 import arrow
-import boto3
 from pyhorn import MHClient
 
 
-class CWPublisher:
+class WorkflowMetrics:
 
-    metric_namespace = 'OCWorkflows'
+    def __init__(self, admin_ip, engage_ip, api_user, api_pass, timeout=30):
+        self.oc_admin = MHClient('http://' + admin_ip, api_user, api_pass, timeout=timeout)
+        self.oc_engage = MHClient('http://' + engage_ip, api_user, api_pass, timeout=timeout)
 
-    def __init__(self, oc_cluster, oc_admin_ip, api_user, api_pass, timeout=30):
-        self.oc_cluster = oc_cluster
-        self.cw = boto3.client('cloudwatch')
-        self.oc = MHClient('http://' + oc_admin_ip, api_user, api_pass, timeout=timeout)
+    def summary(self, days_ago=7):
 
-    def publish_wf_duration_metric(self, wf):
-        completed_ops = [x for x in wf.operations if hasattr(x, 'completed')]
-
-        wf_completed = arrow.get(completed_ops[-1].completed / 1000)
-
-        self.cw.put_metric_data(
-            Namespace=self.metric_namespace,
-            MetricData=[
-                {
-                    'MetricName': 'workflow_duration',
-                    'Dimensions': [
-                        {
-                            'Name': 'Cluster',
-                            'Value': self.oc_cluster
-                        },
-                        {
-                            'Name': 'WorkflowTitle',
-                            'Value': wf.title
-                        }
-                    ],
-                    'Timestamp': arrow.utcnow().datetime,
-                    'Value': wf.duration(),
-                    'Unit': 'Milliseconds'
-                }
-            ]
-        )
-
-    def publish_op_duration_metric(self, op_type, duration):
-
-        metric_name = op_type + '-duration'
-
-        self.cw.put_metric_data(
-            Namespace=self.metric_namespace,
-            MetricData=[
-                {
-                    'MetricName': metric_name,
-                    'Dimensions': [
-                        {
-                            'Name': 'Cluster',
-                            'Value': self.oc_cluster
-                        }
-                    ],
-                    'Timestamp': arrow.utcnow().datetime,
-                    'Value': duration,
-                    'Unit': 'Milliseconds'
-                }
-            ]
-        )
-
-
-    def fetch_workflow(self, wf_id):
-        return self.oc.workflow(wf_id)
-
-
-    def fetch_workflows(self, start_date, end_date, count=None):
-
-        if count is None:
-            count = 100000
-
-        start_date = arrow.get(start_date)
-        if end_date is None:
-            end_date = start_date.replace(days=+1)
-        else:
-            end_date = arrow.get(end_date)
+        end_date = arrow.utcnow()
+        start_date = end_date.replace(days=-days_ago)
 
         params = {
-            'count': count,
+            'count': 999999,
             'fromdate': start_date.format('YYYY-MM-DDTHH:mm:ss') + 'Z',
             'todate': end_date.format('YYYY-MM-DDTHH:mm:ss') + 'Z'
         }
 
-        return self.oc.workflows(**params)
+        workflows = self.oc_admin.workflows(**params)
+        for wf in workflows:
+            continue
+        return
+
+    def is_1x(self):
+        info = self.oc_admin.me()
+        return "user" not in info
+
+    def get_workflow_video_length(self, wf):
+        if self.is_1x():
+            return self._get_workflow_video_length_1x(wf)
+        else:
+            mpid = wf.mediapackage.id
