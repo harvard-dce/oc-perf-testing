@@ -109,7 +109,7 @@ def harvest(ctx, start_date, end_date=None, count=None):
 
 
 @task
-def fio(ctx, runtime=30, data_size=10):
+def fio(ctx, runtime=30, data_size=10, app_name="opencast"):
 
     c = Connection(get_instance_ip(ctx, 'admin1'))
     fieldnames = ['path', 'rw', 'runtime', 'data_size', 'type', 'size', 'KB/s', 'iops', 'clat_usec_mean']
@@ -122,7 +122,8 @@ def fio(ctx, runtime=30, data_size=10):
         "--rw randrw --filename {} --output-format=json"
     )
 
-    for path in ['/var/opencast-workspace', '/var/opencast']:
+    paths = [x.format(app_name) for x in ['/var/{}-workspace', '/var/{}']]
+    for path in paths:
         filename = path + "/fio.tmp"
 
         cmd = "df -hT | awk '{ if ($7 == \"" + path + "\") print $2\" \"$3 }'"
