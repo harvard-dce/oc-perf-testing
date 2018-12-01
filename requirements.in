@@ -10,3 +10,5 @@ iperf3
 pytest
 pytest-mock
 Fabric
+pandas
+lxml

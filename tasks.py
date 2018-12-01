@@ -1,7 +1,12 @@
 import sys
+import re
 import csv
 import json
 import socket
+import arrow
+import pandas as pd
+from lxml.etree import fromstring
+from io import StringIO
 from invoke import task, Collection
 from invoke.exceptions import Exit
 from os import getenv as env
@@ -148,7 +153,7 @@ def iperf3(ctx, server="admin1", client="workers1", parallel=1):
             })
 
         except socket.timeout:
-            print("Connection timed out after 5s to {}".format(conn.host))
+            print("Connection timed out after 5s to {}".format(client_c.host))
         except socket.gaierror as e:
             print(str(e))
 
@@ -159,17 +164,71 @@ def iperf3(ctx, server="admin1", client="workers1", parallel=1):
 
 
 @task
-def workflows(ctx, days_ago=7):
-    oc_api_user = getenv('OC_API_USER')
-    oc_api_pass = getenv('OC_API_PASS')
-    oc_admin = get_instance_ip(ctx, 'admin1')
-    oc_engage = get_instance_ip(ctx, 'engage1')
-    wf_metrics = WorkflowMetrics(oc_admin, oc_engage, oc_api_user, oc_api_pass)
-    wf_metrics.summary(days_ago)
-    return
+def operations(ctx, start=None, end=None, days_ago=7, db_name="opencast"):
+
+    c = Connection(get_instance_ip(ctx, 'admin1'))
+    jobs_table = db_name == "opencast" and "oc_job" or "mh_job"
+    query = get_operations_query(start, end, days_ago, jobs_table)
+    cmd = "sudo -H mysql -B -e '{}' {}".format(query, db_name)
+    res = c.run(cmd, hide=True, pty=True)
+
+#    with open('./operations.tsv', 'w') as f:
+#        f.write(res.stdout)
+
+    df = pd.read_csv(StringIO(res.stdout), sep="\t")
+
+    # make these date objects in case we want to do timeseries stuff
+    date_cols = [x for x in df.columns if x.startswith('date_')]
+    for col in date_cols:
+        df[col] = pd.to_datetime(df[col])
+
+    # anything without a payload we can't get a duration, so not useful
+    df = df.loc[df.payload.str.startswith('<?xml', na=False)]
+
+    # get duration from payload and calc perf_ratio
+    df['duration'] = df.apply(extract_duration_from_payload, axis=1)
+    df['perf_ratio'] = round(df['run_time'] / df['duration'], 3)
+
+    grouped = df.groupby('operation')
+    summary = grouped['run_time', 'queue_time', 'perf_ratio'].agg(['count', 'mean']).round(3)
+    print(summary.to_csv())
 
 #=============================================================================#
 
+
+def extract_duration_from_payload(row):
+    try:
+        payload = row['payload']
+        # some payloads have two (?!?) xml docs separated by '###';
+        # duration should be the same, so just take the first one
+        for doc in payload.split('###'):
+            root = fromstring(doc.encode('utf-8'))
+            duration = root.find('{*}duration')
+            if hasattr(duration, 'text'):
+                return int(duration.text)
+        return pd.np.NaN
+    except Exception as e:
+        print("Error for row {}: {}".format(row, e))
+        print(row['payload'])
+
+
+def get_operations_query(start, end, days_ago, jobs_table):
+
+    start = start and arrow.get(start) or arrow.utcnow().replace(days=-days_ago)
+    end = end and arrow.get(end) or arrow.utcnow()
+
+    query = """
+        SELECT 
+            id, status, payload, run_time, queue_time, 
+            operation, date_created, date_started, date_completed
+        FROM {}
+        WHERE
+            date_started BETWEEN "{}" AND "{}"
+            AND operation NOT LIKE "START_%"
+        """ \
+        .format(jobs_table, start, end)
+
+    return re.compile(r'\s+').sub(' ', query.strip())
 
 def get_instance_ip(ctx, hostname, private=False):
 
@@ -214,7 +273,7 @@ ns = Collection()
 perf_ns = Collection('perf')
 perf_ns.add_task(fio)
 perf_ns.add_task(iperf3)
-perf_ns.add_task(workflows)
+perf_ns.add_task(operations)
 perf_ns.add_task(locust)
 ns.add_collection(perf_ns)
 
