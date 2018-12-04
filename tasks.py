@@ -5,15 +5,20 @@ import json
 import socket
 import arrow
 import pandas as pd
+from time import sleep
 from lxml.etree import fromstring
 from io import StringIO
 from invoke import task, Collection
 from invoke.exceptions import Exit
 from os import getenv as env
-from os.path import join, dirname
+from os.path import join, dirname, basename
 from dotenv import load_dotenv
 from fabric import Connection
 from iperf3 import TestResult
+from splinter import Browser
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
 load_dotenv(join(dirname(__file__), '.env'))
 
@@ -188,6 +193,109 @@ def operations(ctx, start=None, end=None, days_ago=7, db_name="opencast"):
     summary = grouped['run_time', 'queue_time', 'perf_ratio'].agg(['count', 'mean']).round(3)
     print(summary.to_csv())
 
+
+@task
+def locust(ctx):
+    pass
+
+
+@task
+def series(ctx):
+    pass
+
+
+@task(iterable=['video'])
+def events(ctx, video, series=None):
+
+    oc_admin_ip = get_instance_ip(ctx, 'admin1')
+    try:
+        browser = OCBrowser(oc_admin_ip)
+        for vid in video:
+            browser.upload_video(vid, series)
+    finally:
+        if browser:
+            browser.browser.exit()
+    return
+
+
+class OCBrowser:
+
+    def __init__(self, host):
+        self.browser = Browser('chrome')
+
+        # log in
+        self.browser.visit('http://' + host)
+        self.browser.fill('j_username', getenv('OC_ADMIN_USER'))
+        self.browser.fill('j_password', getenv('OC_ADMIN_PASS'))
+        self.browser.find_by_css('.submit').click()
+
+    def upload_video(self, video, series):
+        self.browser.find_by_text('Add event').click()
+        sleep(1)
+
+        #== wizard screen #1 ==#
+        self.browser.find_by_text('No option').first.click()
+        self.browser.find_by_css('a.chosen-single').click()
+        self.browser.find_by_css('.chosen-search-input').first.fill('Foo Series')
+        self.browser.find_by_css('li.active-result').click()
+        editable = self.browser.find_by_css('td.editable')
+        # type num is at idx 1
+        editable[1].find_by_tag('div').click()
+        editable[1].find_by_tag('div').find_by_tag('input').fill('L01')
+        # title is idx 2
+        title = 'oc-perf-testing upload {}'.format(basename(video))
+        editable[2].find_by_tag('div').click()
+        editable[2].find_by_tag('div').find_by_tag('input').fill(title)
+        # click off last input to activate next button
+        editable[3].find_by_tag('div').click()
+        self.browser.find_by_css('.submit').click()
+        sleep(1)
+
+        #== wizard screen #2 ==#
+        self.browser.find_by_css('input#track_multi').fill(video)
+        self.browser.find_by_css('.submit').click()
+        sleep(1)
+
+        #== wizard screen #3 ==#
+        self.browser.find_by_css('.submit').click()
+        sleep(1)
+
+        #== wizard screen #4 ==#
+        workflow_selector_div = self.browser.find_by_xpath('//div[header="Select workflow"]').first
+        workflow_selector_div.find_by_tag('span').click()
+        workflow_selector_div.find_by_css('li.active-result[data-option-array-index="2"]').click()
+        self.browser.find_by_id('publishLive').click()
+        self.browser.find_by_css('.submit').click()
+        sleep(1)
+
+        #== wizard screen #5 ==#
+        self.browser.find_by_css('.submit').click()
+        sleep(1)
+
+        #== wizard screen #6 ==#
+        self.browser.find_by_css('.submit').click()
+        sleep(1)
+
+        upload_notify = self.browser.find_by_css('div[data-message="NOTIFICATIONS.EVENTS_UPLOAD_STARTED"]')
+        is_stale = WebDriverWait(self.browser.driver, timeout=3600, poll_frequency=10).until(
+            EC.staleness_of(upload_notify._element)
+        )
+
+
+ns = Collection()
+
+perf_ns = Collection('perf')
+perf_ns.add_task(fio)
+perf_ns.add_task(iperf3)
+perf_ns.add_task(operations)
+perf_ns.add_task(locust)
+ns.add_collection(perf_ns)
+create_ns = Collection('create')
+create_ns.add_task(events)
+create_ns.add_task(series)
+ns.add_collection(create_ns)
+
+
 #=============================================================================#
 
 
@@ -257,19 +365,4 @@ def get_instance_ip(ctx, hostname, private=False):
         print('\033[30m')
 
     return ip
-
-
-@task
-def locust(ctx):
-    pass
-
-ns = Collection()
-
-perf_ns = Collection('perf')
-perf_ns.add_task(fio)
-perf_ns.add_task(iperf3)
-perf_ns.add_task(operations)
-perf_ns.add_task(locust)
-ns.add_collection(perf_ns)
-
 

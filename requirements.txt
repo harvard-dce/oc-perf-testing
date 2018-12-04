@@ -31,5 +31,7 @@ pytz==2018.7              # via pandas
 pyyaml==3.13              # via awscli
 rsa==3.4.2                # via awscli
 s3transfer==0.1.13        # via awscli
+selenium==3.141.0
 six==1.11.0               # via bcrypt, cryptography, pynacl, python-dateutil
-urllib3==1.24.1           # via botocore
+splinter==0.10.0
+urllib3==1.24.1           # via botocore, selenium

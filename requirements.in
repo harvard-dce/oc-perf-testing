@@ -6,3 +6,5 @@ iperf3
 Fabric
 pandas
 lxml
+splinter
+selenium
