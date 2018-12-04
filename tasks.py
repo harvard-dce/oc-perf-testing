@@ -12,7 +12,6 @@ from invoke.exceptions import Exit
 from os import getenv as env
 from os.path import join, dirname
 from dotenv import load_dotenv
-from metrics import WorkflowMetrics
 from fabric import Connection
 from iperf3 import TestResult
 
@@ -20,10 +19,6 @@ load_dotenv(join(dirname(__file__), '.env'))
 
 AWS_PROFILE = env('AWS_PROFILE')
 AWS_DEFAULT_REGION = env('AWS_DEFAULT_REGION', 'us-east-1')
-
-if AWS_PROFILE is not None:
-    import boto3
-    boto3.setup_default_session(profile_name=AWS_PROFILE)
 
 
 def getenv(var, required=True):

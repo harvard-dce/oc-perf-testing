@@ -1,14 +1,8 @@
 invoke
 awscli
 python-dotenv
-notebook
-ipython-secrets
-pyhorn
-boto3
 arrow
 iperf3
-pytest
-pytest-mock
 Fabric
 pandas
 lxml
