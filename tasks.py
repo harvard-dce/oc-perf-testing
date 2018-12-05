@@ -7,6 +7,7 @@ import arrow
 import pandas as pd
 from time import sleep
 from lxml.etree import fromstring
+from contexttimer import Timer
 from io import StringIO
 from invoke import task, Collection
 from invoke.exceptions import Exit
@@ -19,7 +20,7 @@ from splinter import Browser
 from selenium.webdriver.support.select import Select
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 load_dotenv(join(dirname(__file__), '.env'))
 
@@ -178,9 +179,6 @@ def operations(ctx, start=None, end=None, days_ago=7):
     cmd = "sudo -H mysql -B -e '{}' {}".format(query, db_name)
     res = c.run(cmd, hide=True, pty=True)
 
-#    with open('./operations.tsv', 'w') as f:
-#        f.write(res.stdout)
-
     df = pd.read_csv(StringIO(res.stdout), sep="\t")
 
     # make these date objects in case we want to do timeseries stuff
@@ -217,13 +215,15 @@ def events(ctx, video, series=None, headless=True, max_concurrent=4):
     browser_class = is_1x_stack(ctx) and MHBrowser or OCBrowser
 
     def do_upload(vid, series):
-        try:
-            print("uploading {} to {}".format(vid, series))
-            browser = browser_class(public_dns, headless)
-            browser.upload_video(vid, series)
-        finally:
-            if browser:
-                browser.browser.quit()
+        with Timer() as t:
+            try:
+                print("uploading {} to {}".format(vid, series))
+                browser = browser_class(public_dns, headless)
+                browser.upload_video(vid, series)
+            finally:
+                if browser:
+                    browser.browser.quit()
+        return t.elapsed
 
     pool = ThreadPoolExecutor(max_workers=max_concurrent)
     future_to_vid = {
@@ -233,11 +233,11 @@ def events(ctx, video, series=None, headless=True, max_concurrent=4):
     for future in as_completed(future_to_vid):
         vid = future_to_vid[future]
         try:
-            res = future.result()
+            elapsed_seconds = future.result()
         except Exception as e:
             print('%r generated an exception: %s' % (vid, e))
         else:
-            print('%r finished uploading' % vid)
+            print('%r finished uploading in %d seconds' % (vid, elapsed_seconds))
 
     return
 
