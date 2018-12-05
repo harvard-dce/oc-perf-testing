@@ -19,6 +19,7 @@ from splinter import Browser
 from selenium.webdriver.support.select import Select
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 
 load_dotenv(join(dirname(__file__), '.env'))
 
@@ -210,17 +211,34 @@ def series(ctx):
 
 
 @task(iterable=['video'])
-def events(ctx, video, series=None, headless=False, max_concurrent=1):
+def events(ctx, video, series=None, headless=True, max_concurrent=4):
 
     _, public_dns = get_instance_ip_public_dns(ctx, 'admin1')
     browser_class = is_1x_stack(ctx) and MHBrowser or OCBrowser
-    try:
-        browser = browser_class(public_dns, headless)
-        for vid in video:
+
+    def do_upload(vid, series):
+        try:
+            print("uploading {} to {}".format(vid, series))
+            browser = browser_class(public_dns, headless)
             browser.upload_video(vid, series)
-    finally:
-        if browser:
-            browser.browser.quit()
+        finally:
+            if browser:
+                browser.browser.quit()
+
+    pool = ThreadPoolExecutor(max_workers=max_concurrent)
+    future_to_vid = {
+        pool.submit(do_upload, vid, series): vid for vid in video
+    }
+
+    for future in as_completed(future_to_vid):
+        vid = future_to_vid[future]
+        try:
+            res = future.result()
+        except Exception as e:
+            print('%r generated an exception: %s' % (vid, e))
+        else:
+            print('%r finished uploading' % vid)
+
     return
 
 
