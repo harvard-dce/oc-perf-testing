@@ -11,12 +11,12 @@ from io import StringIO
 from invoke import task, Collection
 from invoke.exceptions import Exit
 from os import getenv as env
-from os.path import join, dirname, basename
+from os.path import join, dirname, basename, abspath
 from dotenv import load_dotenv
 from fabric import Connection
 from iperf3 import TestResult
 from splinter import Browser
-from selenium.webdriver.common.by import By
+from selenium.webdriver.support.select import Select
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
@@ -53,7 +53,8 @@ def profile_check(ctx):
 @task(pre=[profile_check])
 def fio(ctx, runtime=30, data_size=10, app_name="opencast"):
 
-    c = Connection(get_instance_ip(ctx, 'admin1'))
+    admin_ip, _ = get_instance_ip_public_dns(ctx, 'admin1')
+    c = Connection(admin_ip)
     fieldnames = ['path', 'rw', 'runtime', 'data_size', 'type', 'size', 'KB/s', 'iops', 'clat_usec_mean']
     writer = csv.DictWriter(sys.stdout, fieldnames)
     writer.writeheader()
@@ -92,8 +93,8 @@ def fio(ctx, runtime=30, data_size=10, app_name="opencast"):
 @task(pre=[profile_check])
 def iperf3(ctx, server="admin1", client="workers1", parallel=1):
 
-    server_ip = get_instance_ip(ctx, server)
-    client_ip = get_instance_ip(ctx, client, private=True)
+    server_ip, _ = get_instance_ip_public_dns(ctx, server)
+    client_ip, _ = get_instance_ip_public_dns(ctx, client, private=True)
 
     fieldnames = ['server',
                   'client',
@@ -164,11 +165,15 @@ def iperf3(ctx, server="admin1", client="workers1", parallel=1):
 
 
 @task
-def operations(ctx, start=None, end=None, days_ago=7, db_name="opencast"):
+def operations(ctx, start=None, end=None, days_ago=7):
 
-    c = Connection(get_instance_ip(ctx, 'admin1'))
-    jobs_table = db_name == "opencast" and "oc_job" or "mh_job"
+    admin_ip, _ = get_instance_ip_public_dns(ctx, 'admin1')
+    c = Connection(admin_ip)
+
+    db_name = is_1x_stack(ctx) and "matterhorn" or "opencast"
+    jobs_table = db_name == "matterhorn" and "mh_job" or "oc_job"
     query = get_operations_query(start, end, days_ago, jobs_table)
+
     cmd = "sudo -H mysql -B -e '{}' {}".format(query, db_name)
     res = c.run(cmd, hide=True, pty=True)
 
@@ -205,29 +210,32 @@ def series(ctx):
 
 
 @task(iterable=['video'])
-def events(ctx, video, series=None):
+def events(ctx, video, series=None, headless=False, max_concurrent=1):
 
-    oc_admin_ip = get_instance_ip(ctx, 'admin1')
+    _, public_dns = get_instance_ip_public_dns(ctx, 'admin1')
+    browser_class = is_1x_stack(ctx) and MHBrowser or OCBrowser
     try:
-        browser = OCBrowser(oc_admin_ip)
+        browser = browser_class(public_dns, headless)
         for vid in video:
             browser.upload_video(vid, series)
     finally:
         if browser:
-            browser.browser.exit()
+            browser.browser.quit()
     return
 
 
 class OCBrowser:
 
-    def __init__(self, host):
-        self.browser = Browser('chrome')
+    login_css = '.submit'
+
+    def __init__(self, host, headless=True):
+        self.browser = Browser('chrome', headless=headless)
 
         # log in
         self.browser.visit('http://' + host)
         self.browser.fill('j_username', getenv('OC_ADMIN_USER'))
         self.browser.fill('j_password', getenv('OC_ADMIN_PASS'))
-        self.browser.find_by_css('.submit').click()
+        self.browser.find_by_css(self.login_css).click()
 
     def upload_video(self, video, series):
         self.browser.find_by_text('Add event').click()
@@ -236,7 +244,7 @@ class OCBrowser:
         #== wizard screen #1 ==#
         self.browser.find_by_text('No option').first.click()
         self.browser.find_by_css('a.chosen-single').click()
-        self.browser.find_by_css('.chosen-search-input').first.fill('Foo Series')
+        self.browser.find_by_css('.chosen-search-input').first.fill(series)
         self.browser.find_by_css('li.active-result').click()
         editable = self.browser.find_by_css('td.editable')
         # type num is at idx 1
@@ -252,7 +260,7 @@ class OCBrowser:
         sleep(1)
 
         #== wizard screen #2 ==#
-        self.browser.find_by_css('input#track_multi').fill(video)
+        self.browser.find_by_css('input#track_multi').fill(abspath(video))
         self.browser.find_by_css('.submit').click()
         sleep(1)
 
@@ -281,9 +289,49 @@ class OCBrowser:
             EC.staleness_of(upload_notify._element)
         )
 
+class MHBrowser(OCBrowser):
+
+    login_css = 'input[name="submit"]'
+
+    def upload_video(self, video, series):
+        # go to the upload page
+        self.browser.find_by_id('adminlink').click()
+        self.browser.find_by_id('uploadButton').click()
+
+        # set the series
+        self.browser.find_by_css('input#dceTermFilter')._element.clear()
+        self.browser.find_by_css('input#seriesSelect').fill(series)
+        self.browser.find_by_css('ul.ui-autocomplete a').first.click()
+
+        # fill in other req metadata
+        title = 'oc-perf-testing upload {}'.format(basename(video))
+        self.browser.find_by_css('input#title').fill(title)
+        self.browser.find_by_css('input#type').fill('L01')
+        self.browser.find_by_css('input#publisher').fill('foo@example.edu')
+
+        # set the upload file
+        iframe = self.browser.find_by_css('iframe.uploadForm-container').first
+        self.browser.driver.switch_to.frame(iframe._element)
+        self.browser.find_by_css('input#file').fill(abspath(video))
+        self.browser.driver.switch_to.default_content()
+
+        # set the workflow options
+        select = Select(self.browser.find_by_id('workflowSelector')._element)
+        select.select_by_value('DCE-auto-publish')
+        sleep(1)
+        self.browser.find_by_css('input#epiphanUpload').check()
+
+        # upload and wait
+        self.browser.find_by_css('button#submitButton').click()
+
+        upload_progress = self.browser.find_by_css('div#progressStage')
+        is_stale = WebDriverWait(self.browser.driver, timeout=3600, poll_frequency=10).until(
+            EC.invisibility_of_element(upload_progress._element)
+        )
+        self.browser.find_by_text('<< Back to Recordings').click()
+
 
 ns = Collection()
-
 perf_ns = Collection('perf')
 perf_ns.add_task(fio)
 perf_ns.add_task(iperf3)
@@ -333,20 +381,16 @@ def get_operations_query(start, end, days_ago, jobs_table):
 
     return re.compile(r'\s+').sub(' ', query.strip())
 
-def get_instance_ip(ctx, hostname, private=False):
+def get_instance_ip_public_dns(ctx, hostname, private=False):
 
-    cmd = ("aws {} opsworks describe-stacks "
-           "--query \"Stacks[?Name=='{}'].StackId\" "
-           "--output text").format(profile_arg(), getenv('OC_CLUSTER'))
-
-    opsworks_stack_id = ctx.run(cmd, hide=True).stdout.strip()
+    opsworks_stack_id = get_stack_id(ctx)
 
     if not private:
         cmd = ("aws {} opsworks describe-instances --stack-id {} "
-               "--query \"Instances[?Hostname=='{}'].[ElasticIp,Status]\" "
+               "--query \"Instances[?Hostname=='{}'].[ElasticIp,Status,PublicDns]\" "
                "--output text").format(profile_arg(), opsworks_stack_id, hostname)
 
-        ip, status = ctx.run(cmd, hide=True).stdout.strip().split()
+        ip, status, host = ctx.run(cmd, hide=True).stdout.strip().split()
     else:
         cmd = ("aws {} opsworks describe-instances --stack-id {} "
                "--query \"Instances[?Hostname=='{}'].[Ec2InstanceId,Status]\" "
@@ -359,10 +403,34 @@ def get_instance_ip(ctx, hostname, private=False):
                "--output text").format(profile_arg(), instance_id)
 
         ip = ctx.run(cmd, hide=True).stdout.strip()
+        host = None
 
     if status != "online":
         print('\033[31m' + 'WARNING: {} instance is not online'.format(hostname))
         print('\033[30m')
 
-    return ip
+    return ip, host
 
+def get_stack_id(ctx):
+
+    cmd = ("aws {} opsworks describe-stacks "
+           "--query \"Stacks[?Name=='{}'].StackId\" "
+           "--output text").format(profile_arg(), getenv('OC_CLUSTER'))
+
+    return ctx.run(cmd, hide=True).stdout.strip()
+
+def get_app_shortname(ctx, stack_id=None):
+
+    if stack_id is None:
+        stack_id = get_stack_id(ctx)
+
+    cmd = ("aws {} opsworks describe-apps "
+           "--stack-id {} --query \"Apps[0].Shortname\" "
+           "--output text").format(profile_arg(), stack_id)
+
+    return ctx.run(cmd, hide=True).stdout.strip()
+
+
+def is_1x_stack(ctx):
+
+    return get_app_shortname(ctx) == "matterhorn"
