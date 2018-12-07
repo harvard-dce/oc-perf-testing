@@ -25,7 +25,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 load_dotenv(join(dirname(__file__), '.env'))
 
 AWS_PROFILE = env('AWS_PROFILE')
-AWS_DEFAULT_REGION = env('AWS_DEFAULT_REGION', 'us-east-1')
 
 
 def getenv(var, required=True):
@@ -44,7 +43,7 @@ def profile_arg():
 @task
 def profile_check(ctx):
     if AWS_PROFILE is None:
-        print("You do not have 'AWS_PROFILE' set in your environment. "
+        print("You do not have '$AWS_PROFILE' set in your environment. "
               "This task will run using your default AWS account/credentials. "
               )
         ok = input('Is this what you want? [y/N] ').lower().strip().startswith('y')
@@ -52,9 +51,18 @@ def profile_check(ctx):
             raise Exit("Aborting")
 
 
-@task(pre=[profile_check])
-def fio(ctx, runtime=30, data_size=10, app_name="opencast"):
-
+@task(
+    help={
+        'runtime': 'How long (in seconds) to run the io test. Default is 30.',
+        'data-size': 'Total size in (in GB) of io to transfer. Default is 10.'
+    },
+    pre=[profile_check]
+)
+def fio(ctx, runtime=30, data_size=10):
+    """
+     Perform io benchmarking using fio
+    """
+    app_name = get_app_shortname(ctx)
     admin_ip, _ = get_instance_ip_public_dns(ctx, 'admin1')
     c = Connection(admin_ip)
     fieldnames = ['path', 'rw', 'runtime', 'data_size', 'type', 'size', 'KB/s', 'iops', 'clat_usec_mean']
@@ -92,9 +100,18 @@ def fio(ctx, runtime=30, data_size=10, app_name="opencast"):
             })
 
 
-@task(pre=[profile_check])
+@task(
+    help={
+        'server': 'Shortname of the node that will act as the iperf3 server. Default is "admin1".',
+        'client': 'Shortname of the node that will act as the iperf3 client. Default is "workers1".',
+        'parallel': 'Number of parallel client streams to run. Default is 1.'
+    },
+    pre=[profile_check]
+)
 def iperf3(ctx, server="admin1", client="workers1", parallel=1):
-
+    """
+    Perform network benchmarking between nodes in the cluster using iperf3
+    """
     server_ip, _ = get_instance_ip_public_dns(ctx, server)
     client_ip, _ = get_instance_ip_public_dns(ctx, client, private=True)
 
@@ -166,9 +183,18 @@ def iperf3(ctx, server="admin1", client="workers1", parallel=1):
             server_c.run("kill {}".format(server_pid))
 
 
-@task
+@task(
+    help={
+        'start': 'Date string representing the start of the time period to query.',
+        'end': 'Date string representing the end of the time period to query.',
+        'days-ago': 'Set the query time range to this many days ago from now. Default is 7'
+    },
+    pre=[profile_check]
+)
 def operations(ctx, start=None, end=None, days_ago=7):
-
+    """
+    Extract Opencast workflow operation performance data
+    """
     admin_ip, _ = get_instance_ip_public_dns(ctx, 'admin1')
     c = Connection(admin_ip)
 
@@ -200,6 +226,9 @@ def operations(ctx, start=None, end=None, days_ago=7):
 
 @task
 def locust(ctx):
+    """
+    Not implemented
+    """
     pass
 
 
@@ -208,9 +237,20 @@ def series(ctx):
     pass
 
 
-@task(iterable=['video'])
+@task(
+    help={
+        'video': 'Path to the video to upload. Repeat to upload multiple.',
+        'series': 'Series title. This has to match what\'s in the upload form select option.',
+        'headless': 'Run the chrome in "headless" mode. Default true.',
+        'max-concurrent': 'How many concurrent uploads to allow if uploading multiple. Default is 4'
+    },
+    pre=[profile_check],
+    iterable=['video']
+)
 def events(ctx, video, series=None, headless=True, max_concurrent=4):
-
+    """
+    Upload recording(s) using Selenium
+    """
     _, public_dns = get_instance_ip_public_dns(ctx, 'admin1')
     browser_class = is_1x_stack(ctx) and MHBrowser or OCBrowser
 
