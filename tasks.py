@@ -211,9 +211,21 @@ def locust(ctx):
     pass
 
 
-@task
-def series(ctx):
-    pass
+@task(
+    help={
+        'headless': 'Run the chrome in "headless" mode. Default true.'
+    },
+    pre=[profile_check]
+)
+def series(ctx, headless=True):
+    """
+    Creates a canned test series with title "Opencast Performance Testing"
+    """
+    _, public_dns = get_instance_ip_public_dns(ctx, 'admin1')
+    browser_class = is_1x_stack(ctx) and MHBrowser or OCBrowser
+    browser = browser_class(public_dns, headless)
+    browser.add_series()
+    print("done.")
 
 
 @task(
@@ -226,7 +238,7 @@ def series(ctx):
     pre=[profile_check],
     iterable=['video']
 )
-def events(ctx, video, series=None, headless=True, max_concurrent=4):
+def events(ctx, video, series="Opencast Performance Testing", headless=True, max_concurrent=4):
     """
     Upload recording(s) using Selenium
     """
@@ -257,8 +269,6 @@ def events(ctx, video, series=None, headless=True, max_concurrent=4):
             print('%r generated an exception: %s' % (vid, e))
         else:
             print('%r finished uploading in %d seconds' % (vid, elapsed_seconds))
-
-    return
 
 
 ns = Collection()

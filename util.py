@@ -124,6 +124,7 @@ class OCBrowser:
 
     def __init__(self, host, headless=True):
         self.browser = Browser('chrome', headless=headless)
+        self.host = host
 
         # log in
         self.browser.visit('http://' + host)
@@ -183,6 +184,15 @@ class OCBrowser:
             EC.staleness_of(upload_notify._element)
         )
 
+    def add_series(self):
+        series_doc_url = 'http://' + self.host + '/docs.html?path=/series'
+        self.browser.visit(series_doc_url)
+        self.browser.execute_script("$('div.hidden_form').show()")
+        form = self.browser.find_by_css('form[action="/series/"]')
+        form.find_by_name('series').fill(CATALOG_XML.strip())
+        form.find_by_name('acl').fill(ACL_XML.strip())
+        form._element.submit()
+
 
 class MHBrowser(OCBrowser):
 
@@ -223,3 +233,53 @@ class MHBrowser(OCBrowser):
         WebDriverWait(self.browser.driver, timeout=3600, poll_frequency=10).until(
             EC.invisibility_of_element(upload_progress._element)
         )
+
+
+
+CATALOG_XML = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<dublincore xmlns="http://www.opencastproject.org/xsd/1.0/dublincore/"
+        xmlns:dcterms="http://purl.org/dc/terms/"
+        xmlns:oc="http://www.opencastproject.org/matterhorn/">
+    <dcterms:creator>Harvard Extension School</dcterms:creator>
+    <dcterms:contributor>Henry H. Leitner</dcterms:contributor>
+    <dcterms:description>http://extension.harvard.edu</dcterms:description>
+    <dcterms:subject>OC-PERF-TESTING E-19997</dcterms:subject>
+    <dcterms:identifier>20190119997</dcterms:identifier>
+    <dcterms:language>eng</dcterms:language>
+    <dcterms:publisher>Harvard University, DCE</dcterms:publisher>
+    <oc:annotation>true</oc:annotation>
+    <dcterms:title>Opencast Performance Testing</dcterms:title>
+</dublincore>
+'''
+
+ACL_XML = '''
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<acl xmlns="http://org.opencastproject.security">
+    <ace>
+        <role>ROLE_ADMIN</role>
+        <action>read</action>
+        <allow>true</allow>
+    </ace>
+    <ace>
+        <role>ROLE_ADMIN</role>
+        <action>write</action>
+        <allow>true</allow>
+    </ace>
+    <ace>
+        <role>ROLE_ADMIN</role>
+        <action>delete</action>
+        <allow>true</allow>
+    </ace>
+    <ace>
+        <role>ROLE_ADMIN</role>
+        <action>analyze</action>
+        <allow>true</allow>
+    </ace>
+    <ace>
+        <role>ROLE_ANONYMOUS</role>
+        <action>read</action>
+        <allow>true</allow>
+    </ace>
+</acl>
+        '''
